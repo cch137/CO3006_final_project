@@ -1,0 +1,17 @@
+{
+  "folders": [
+    {
+      "name": "esp8266_websocket_client",
+      "path": "esp8266_websocket_client"
+    },
+    {
+      "name": "arduino_controller",
+      "path": "arduino_controller"
+    },
+    {
+      "name": "CO3006_final_project",
+      "path": "."
+    }
+  ],
+  "settings": {}
+}
