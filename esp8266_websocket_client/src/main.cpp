@@ -124,9 +124,11 @@ void websocket_event(WStype_t type, uint8_t *payload, size_t length)
 // Function to log debug information
 void log_debug_info(const char *message)
 {
-  Serial.write((uint8_t)200); // Send header byte
-  Serial.write(message);      // Send the message string
-  Serial.write('\n');         // Add a newline
+  String filtered_message = String(message);
+  filtered_message.replace("\n", " ");    // Replace all newline characters with a space
+  Serial.write((uint8_t)200);             // Send header byte
+  Serial.write(filtered_message.c_str()); // Send the filtered message string
+  Serial.write('\n');                     // Add a newline at the end
 }
 
 // Function to send data over WebSocket
