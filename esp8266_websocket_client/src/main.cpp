@@ -20,9 +20,11 @@
 #define WS_PONG_TIMEOUT_MS 2000
 #define WS_DISCONNECT_TIMEOUT_COUNT 5
 
+#define HEADER_LOG_MESSAGE 120
+
 // Function prototypes
 void websocket_event(WStype_t type, uint8_t *payload, size_t length);
-void log_debug_info(const char *message);
+void log_message(const char *message);
 void maintain_wifi();
 void maintain_ws();
 void send_data(uint8_t data);
@@ -54,22 +56,22 @@ void maintain_wifi()
     delay(10);
     if (++connecting_count == UINT8_MAX)
     {
-      log_debug_info("Connecting to WiFi...");
+      log_message("Connecting to WiFi...");
       connecting_count = 0;
     }
   }
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    log_debug_info("Connected to WiFi, local IP:");
-    log_debug_info(WiFi.localIP().toString().c_str());
+    log_message("Connected to WiFi, local IP:");
+    log_message(WiFi.localIP().toString().c_str());
 
     // Setup WebSocket connection when WiFi is connected
     maintain_ws();
   }
   else
   {
-    log_debug_info("Failed to connect to WiFi");
+    log_message("Failed to connect to WiFi");
   }
 }
 
@@ -78,7 +80,7 @@ void maintain_ws()
   if (ws_connecting)
     return;
 
-  log_debug_info("Connecting WebSocket...");
+  log_message("Connecting WebSocket...");
   ws.begin(F(WS_HOST), WS_PORT, F(WS_URL));
   ws.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PONG_TIMEOUT_MS, WS_DISCONNECT_TIMEOUT_COUNT);
 
@@ -95,26 +97,26 @@ void websocket_event(WStype_t type, uint8_t *payload, size_t length)
   switch (type)
   {
   case WStype_DISCONNECTED:
-    log_debug_info("WebSocket disconnected");
+    log_message("WebSocket disconnected");
     ws_connecting = false;
     ws_connected = false;
     break;
   case WStype_CONNECTED:
-    log_debug_info("WebSocket connected");
+    log_message("WebSocket connected");
     ws_connecting = false;
     ws_connected = true;
     break;
   case WStype_TEXT:
-    log_debug_info("WebSocket received text");
+    log_message("WebSocket received text");
     break;
   case WStype_BIN:
-    log_debug_info("WebSocket received binary data");
+    log_message("WebSocket received binary data");
     break;
   case WStype_PING:
-    log_debug_info("WebSocket received ping, sending pong");
+    log_message("WebSocket received ping, sending pong");
     break;
   case WStype_PONG:
-    log_debug_info("WebSocket received pong");
+    log_message("WebSocket received pong");
     break;
   default:
     break;
@@ -122,13 +124,13 @@ void websocket_event(WStype_t type, uint8_t *payload, size_t length)
 }
 
 // Function to log debug information
-void log_debug_info(const char *message)
+void log_message(const char *message)
 {
   String filtered_message = String(message);
-  filtered_message.replace("\n", " ");    // Replace all newline characters with a space
-  Serial.write((uint8_t)200);             // Send header byte
-  Serial.write(filtered_message.c_str()); // Send the filtered message string
-  Serial.write('\n');                     // Add a newline at the end
+  filtered_message.replace("\n", " ");       // Replace all newline characters with a space
+  Serial.write((uint8_t)HEADER_LOG_MESSAGE); // Send header byte
+  Serial.write(filtered_message.c_str());    // Send the filtered message string
+  Serial.write('\n');                        // Add a newline at the end
 }
 
 // Function to send data over WebSocket
@@ -153,7 +155,7 @@ void setup()
   // Initial WiFi connection
   maintain_wifi();
 
-  log_debug_info("Setup done");
+  log_message("Setup done");
 }
 
 void loop()
