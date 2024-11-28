@@ -29,13 +29,15 @@
 #define EOP (uint8_t)0x00
 
 #define CONFIG_PAYLOAD_LENGTH 16
+#define SERIAL_READ_TIMEOUT_MS 100
 
 // Function prototypes
 void websocket_event(WStype_t type, uint8_t *payload, size_t length);
-void log_message(const char *message);
+void log_message(const char *message, bool is_error = false);
 void maintain_wifi();
 void maintain_ws();
 void handle_ws_payload(uint8_t *payload, size_t length);
+bool read_serial_payload(uint8_t *buffer, size_t length);
 
 // WebSocket client instance
 WebSocketsClient ws;
@@ -62,56 +64,44 @@ void maintain_wifi()
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long start_attempt_time = millis();
-  uint8_t connecting_count = UINT8_MAX - 1;
-
-  // Try connecting to WiFi until timeout
   while (WiFi.status() != WL_CONNECTED && millis() - start_attempt_time < WIFI_MAX_RETRY_TIME_MS)
   {
-    delay(10);
-    if (++connecting_count == UINT8_MAX)
-    {
-      log_message("Connecting to WiFi...");
-      connecting_count = 0;
-    }
+    delay(100);
+    log_message("Connecting to WiFi...");
   }
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    log_message("Connected to WiFi, local IP:");
+    log_message("Connected to WiFi");
     log_message(WiFi.localIP().toString().c_str());
-
-    // Setup WebSocket connection when WiFi is connected
     maintain_ws();
   }
   else
   {
-    log_message("Failed to connect to WiFi");
+    log_message("Failed to connect to WiFi", true);
   }
 }
 
 void maintain_ws()
 {
-  if (ws_connecting)
+  if (ws_connecting || ws_connected)
     return;
 
   log_message("Connecting WebSocket...");
   ws.begin(F(WS_HOST), WS_PORT, F(WS_URL));
   ws.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PONG_TIMEOUT_MS, WS_DISCONNECT_TIMEOUT_COUNT);
 
-  // Set custom header for WebSocket
   ws.setExtraHeaders("CO3006-Sensor-Name: sensor-01\r\nCO3006-Auth: key-16888888");
-
   ws.onEvent(websocket_event);
   ws_connecting = true;
 }
 
-// WebSocket event handler
 void websocket_event(WStype_t type, uint8_t *payload, size_t length)
 {
   switch (type)
   {
   case WStype_DISCONNECTED:
-    log_message("WebSocket disconnected");
+    log_message("WebSocket disconnected", true);
     ws_connecting = false;
     ws_connected = false;
     break;
@@ -121,37 +111,24 @@ void websocket_event(WStype_t type, uint8_t *payload, size_t length)
     ws_connected = true;
     break;
   case WStype_TEXT:
-    log_message("WebSocket received text");
-    handle_ws_payload(payload, length);
-    break;
   case WStype_BIN:
-    log_message("WebSocket received binary data");
     handle_ws_payload(payload, length);
-    break;
-  case WStype_PING:
-    log_message("WebSocket received ping, sending pong");
-    break;
-  case WStype_PONG:
-    log_message("WebSocket received pong");
     break;
   default:
     break;
   }
 }
 
-// Function to handle incoming WebSocket payloads
 void handle_ws_payload(uint8_t *payload, size_t length)
 {
   if (length < 1)
     return;
 
   uint8_t header = payload[0];
-
   switch (header)
   {
   case HEADER_SERVER_SET_CLIENT_CONFIG:
   case HEADER_SERVER_GET_CLIENT_CONFIG:
-    Serial.write(header);
     Serial.write(payload, length);
     Serial.write(EOP);
     break;
@@ -170,87 +147,81 @@ void handle_ws_payload(uint8_t *payload, size_t length)
     ws_connecting = false;
     break;
   default:
-    log_message("Unknown header received");
+    log_message("Unknown header received", true);
     break;
   }
 }
 
-// Function to log debug information
-void log_message(const char *message)
+void log_message(const char *message, bool is_error)
 {
   String filtered_message = String(message);
-  filtered_message.replace("\n", " ");                 // Replace all newline characters with a space
-  Serial.write(HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO); // Send header byte
-  Serial.write(filtered_message.c_str());              // Send the filtered message string
-  Serial.write('\n');                                  // Add a newline at the end
-  Serial.write(EOP);                                   // Add End of Packet (EOP)
+  filtered_message.replace("\n", " ");
+  Serial.write(HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO);
+  Serial.write(is_error ? "ERR " : "INFO ");
+  Serial.write(filtered_message.c_str());
+  Serial.write('\n');
+  Serial.write(EOP);
+}
+
+bool read_serial_payload(uint8_t *buffer, size_t length)
+{
+  unsigned long start_time = millis();
+  size_t index = 0;
+
+  while (index < length && millis() - start_time < SERIAL_READ_TIMEOUT_MS)
+  {
+    if (Serial.available() > 0)
+    {
+      buffer[index++] = static_cast<uint8_t>(Serial.read());
+    }
+  }
+
+  if (index != length || Serial.read() != EOP)
+  {
+    log_message("Invalid Serial payload", true);
+    return false;
+  }
+
+  return true;
 }
 
 void setup()
 {
   Serial.begin(9600);
-
-  // Set up GPIO pins (currently commented out)
-  // pinMode(GPIO1_PIN, OUTPUT);
-  // digitalWrite(GPIO1_PIN, LOW);
-  // pinMode(GPIO2_PIN, OUTPUT);
-  // digitalWrite(GPIO2_PIN, LOW);
-
-  // Initial WiFi connection
   maintain_wifi();
-
-  log_message("Setup done");
+  log_message("Setup complete");
 }
 
 void loop()
 {
-  // Maintain WiFi connection
   if (WiFi.status() != WL_CONNECTED)
   {
     maintain_wifi();
   }
 
-  // Maintain WebSocket connection
   if (!ws_connecting && !ws_connected)
   {
     maintain_ws();
   }
 
-  // Handle WebSocket events
   ws.loop();
 
-  // Read data from Serial (non-blocking)
-  while (Serial.available() > 0)
+  if (Serial.available() > 0)
   {
     uint8_t incoming = static_cast<uint8_t>(Serial.read());
-    uint8_t payload[CONFIG_PAYLOAD_LENGTH + 1];
+    uint8_t buffer[CONFIG_PAYLOAD_LENGTH + 1];
 
-    if (incoming <= 100 && Serial.read() == EOP)
+    if (incoming == HEADER_CLIENT_SUBMIT_CONFIG && read_serial_payload(buffer, CONFIG_PAYLOAD_LENGTH))
+    {
+      ws.sendBIN(buffer, CONFIG_PAYLOAD_LENGTH);
+    }
+    else if (incoming == HEADER_CLIENT_GET_SERVER_CONFIG && Serial.read() == EOP)
     {
       ws.sendBIN(&incoming, 1);
-      continue;
     }
-
-    if (incoming == HEADER_CLIENT_SUBMIT_CONFIG)
+    else
     {
-      payload[0] = incoming;
-      for (int i = 1; i < CONFIG_PAYLOAD_LENGTH + 1; i++)
-      {
-        payload[i] = Serial.read();
-      }
-      if (Serial.read() == EOP)
-      {
-        ws.sendBIN(payload, CONFIG_PAYLOAD_LENGTH);
-      }
-      continue;
+      log_message("Unknown or invalid Serial command", true);
     }
-
-    if (incoming == HEADER_CLIENT_GET_SERVER_CONFIG && Serial.read() == EOP)
-    {
-      ws.sendBIN(&incoming, 1);
-      continue;
-    }
-
-    log_message("Unknown header received from Arduino");
   }
 }

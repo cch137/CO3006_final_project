@@ -83,10 +83,11 @@ void loop()
     }
 
     // Debug output
-    Serial.print("Analog Sensor Value: ");
-    Serial.println(V_raw);
-    Serial.print("Soil Moisture (%): ");
-    Serial.println(M);
+    Serial.print("A0: ");
+    Serial.print(V_raw);
+    Serial.print(" (");
+    Serial.print(M);
+    Serial.println("%)");
 
     lastSentTimeMs = currentTimeMs;
   }
