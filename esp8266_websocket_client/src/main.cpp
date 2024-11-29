@@ -13,12 +13,8 @@
 #define WS_PONG_TIMEOUT_MS 2000
 #define WS_DISCONNECT_TIMEOUT_COUNT 5
 
-#define EOP (uint8_t)0x00
-
-#define TASK_INTERVAL_MS 1000
-
 #define HEADER_EMPTY (uint8_t)0
-#define HEADER_SUBMIT_H (uint8_t)110
+#define HEADER_SUBMIT_M (uint8_t)110
 #define HEADER_CLIENT_SUBMIT_CONFIG (uint8_t)111
 #define HEADER_SERVER_SET_CLIENT_CONFIG (uint8_t)112
 #define HEADER_SERVER_GET_CLIENT_CONFIG (uint8_t)113
@@ -27,6 +23,9 @@
 #define HEADER_SERVER_DEBUG_ESP8266_RESET (uint8_t)121
 #define HEADER_SERVER_DEBUG_ESP8266_RESTART (uint8_t)122
 #define HEADER_SERVER_DEBUG_ESP8266_DISCONNECT_WS (uint8_t)123
+#define EOP (uint8_t)0x00
+
+#define PACKET_CONFIG_PAYLOAD_SIZE 16
 
 typedef struct
 {
@@ -46,6 +45,8 @@ void ws_payload_handler(uint8_t *ws_payload, size_t length);
 
 void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size);
 void serial_println(String message);
+void reset_serial_packet(SerialPacket *packet);
+bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
 
 void maintain_wifi()
 {
@@ -115,16 +116,19 @@ void ws_event_handler(WStype_t type, uint8_t *payload, size_t length)
       disconn_counter = 0;
     }
     break;
+
   case WStype_CONNECTED:
     serial_println("ws opened");
     ws_connecting = false;
     ws_connected = true;
     disconn_counter = 0;
     break;
+
   case WStype_TEXT:
   case WStype_BIN:
     ws_payload_handler(payload, length);
     break;
+
   default:
     break;
   }
@@ -177,6 +181,31 @@ void serial_println(String message)
   send_serial_packet(HEADER_ESP8266_LOG, (uint8_t *)message.c_str(), (size_t)message.length());
 }
 
+void reset_serial_packet(SerialPacket *packet)
+{
+  packet->header = HEADER_EMPTY;
+  free(packet->payload);
+  packet->payload = NULL;
+  packet->payload_size = (size_t)0;
+}
+
+bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
+{
+  packet->payload = (uint8_t *)realloc(packet->payload, packet->payload_size + 1);
+
+  if (!packet->payload)
+  {
+    // 記憶體分配失敗時重啟機器
+    reset_serial_packet(packet);
+    ESP.reset();
+    return false;
+  }
+
+  packet->payload[packet->payload_size] = data;
+  ++packet->payload_size;
+  return true;
+}
+
 void setup()
 {
   Serial.begin(9600);
@@ -186,6 +215,9 @@ void setup()
 
 void loop()
 {
+  static SerialPacket packet;
+  static uint8_t incoming = 0;
+
   if (WiFi.status() != WL_CONNECTED)
   {
     maintain_wifi();
@@ -198,15 +230,73 @@ void loop()
 
   ws.loop();
 
-  static unsigned long last_task_ms = 0;
-  static unsigned long current_ms = 0;
-
-  current_ms = millis();
-
-  if (current_ms - last_task_ms > TASK_INTERVAL_MS)
+  if (Serial.available())
   {
-    last_task_ms = current_ms;
-    serial_println("OK");
+    incoming = Serial.read();
+
+    if (packet.header == HEADER_EMPTY)
+    {
+      packet.header = incoming;
+    }
+    else
+    {
+      switch (packet.header)
+      {
+      case HEADER_SUBMIT_M:
+        if (incoming == EOP)
+        {
+          if (packet.payload_size == 1)
+          {
+            // 發送 M 到 server
+            append_serial_packet_payload(&packet, packet.payload[0]);
+            packet.payload[0] = packet.header;
+            ws.sendBIN(packet.payload, packet.payload_size);
+          }
+          reset_serial_packet(&packet);
+        }
+        else
+        {
+          if (packet.payload_size == 0)
+          {
+            append_serial_packet_payload(&packet, incoming);
+          }
+          else
+          {
+            reset_serial_packet(&packet);
+          }
+        }
+        break;
+
+      case HEADER_CLIENT_SUBMIT_CONFIG:
+        if (packet.payload_size < PACKET_CONFIG_PAYLOAD_SIZE)
+        {
+          append_serial_packet_payload(&packet, incoming);
+          break;
+        }
+        if (incoming == EOP)
+        {
+          Serial.write(HEADER_SERVER_SET_CLIENT_CONFIG);
+          Serial.write(packet.payload, packet.payload_size);
+          Serial.write(EOP);
+        }
+        reset_serial_packet(&packet);
+        break;
+
+      case HEADER_CLIENT_GET_SERVER_CONFIG:
+        if (incoming == EOP)
+        {
+          // 轉發封包到 server
+          append_serial_packet_payload(&packet, packet.payload[0]);
+          ws.sendBIN(packet.payload, packet.payload_size);
+        }
+        reset_serial_packet(&packet);
+        break;
+
+      default:
+        reset_serial_packet(&packet);
+        break;
+      }
+    }
   }
 
   // 降低功耗

@@ -109,15 +109,15 @@ void loop()
   // 提交資料到 server
   if (current_ms - last_task1_ms > I)
   {
-    Serial.println("submit M");
     last_task1_ms = current_ms;
     if (M == UINT8_MAX)
     {
       M = get_M();
     }
+    Serial.println("Arduino M");
     ESP8266Serial.write(HEADER_SUBMIT_M);
-    ESP8266Serial.write(M);
-    ESP8266Serial.write(EOP);
+    // ESP8266Serial.write(M);
+    // ESP8266Serial.write(EOP);
   }
 
   // 檢查是否要澆水
@@ -148,6 +148,7 @@ void loop()
   if (ESP8266Serial.available())
   {
     incoming = ESP8266Serial.read();
+
     if (packet.header == HEADER_EMPTY)
     {
       packet.header = incoming;
