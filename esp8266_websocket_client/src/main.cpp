@@ -1,12 +1,7 @@
 #include <Arduino.h>
-#include "ESP8266WiFi.h"
 #include <WebSocketsClient.h>
+#include "ESP8266WiFi.h"
 
-// GPIO pins
-#define GPIO1_PIN 1
-#define GPIO2_PIN 2
-
-// WiFi settings
 #define WIFI_SSID "9G"
 #define WIFI_PASSWORD "chee8888"
 #define WIFI_MAX_RETRY_TIME_MS 10000
@@ -18,42 +13,39 @@
 #define WS_PONG_TIMEOUT_MS 2000
 #define WS_DISCONNECT_TIMEOUT_COUNT 5
 
+#define EOP (uint8_t)0x00
+
+#define TASK_INTERVAL_MS 1000
+
+#define HEADER_EMPTY (uint8_t)0
+#define HEADER_SUBMIT_H (uint8_t)110
 #define HEADER_CLIENT_SUBMIT_CONFIG (uint8_t)111
 #define HEADER_SERVER_SET_CLIENT_CONFIG (uint8_t)112
 #define HEADER_SERVER_GET_CLIENT_CONFIG (uint8_t)113
 #define HEADER_CLIENT_GET_SERVER_CONFIG (uint8_t)114
-#define HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO (uint8_t)120
+#define HEADER_ESP8266_LOG 120
 #define HEADER_SERVER_DEBUG_ESP8266_RESET (uint8_t)121
 #define HEADER_SERVER_DEBUG_ESP8266_RESTART (uint8_t)122
 #define HEADER_SERVER_DEBUG_ESP8266_DISCONNECT_WS (uint8_t)123
-#define EOP (uint8_t)0x00
 
-#define CONFIG_PAYLOAD_LENGTH 16
-#define SERIAL_READ_TIMEOUT_MS 100
+typedef struct
+{
+  uint8_t header;
+  uint8_t *payload;
+  size_t payload_size;
+} SerialPacket;
 
-// Function prototypes
-void websocket_event(WStype_t type, uint8_t *payload, size_t length);
-void log_message(const char *message, bool is_error = false);
-void maintain_wifi();
-void maintain_ws();
-void handle_ws_payload(uint8_t *payload, size_t length);
-bool read_serial_payload(uint8_t *buffer, size_t length);
-
-// WebSocket client instance
-WebSocketsClient ws;
-
-// Timers
-unsigned long send_interval_ms = 1000;
-
-// WebSocket connection flag
 bool ws_connecting = false;
 bool ws_connected = false;
+WebSocketsClient ws;
 
-// Variables for configuration
-uint32_t V_offset = 250;
-uint32_t L = 30;
-uint32_t U = 70;
-uint32_t I = 1000;
+void maintain_wifi();
+void maintain_ws();
+void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
+void ws_payload_handler(uint8_t *ws_payload, size_t length);
+
+void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size);
+void serial_println(String message);
 
 void maintain_wifi()
 {
@@ -63,22 +55,30 @@ void maintain_wifi()
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+  unsigned int i = 10;
   unsigned long start_attempt_time = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start_attempt_time < WIFI_MAX_RETRY_TIME_MS)
   {
     delay(100);
-    log_message("Connecting to WiFi...");
+
+    if (++i > 20)
+    {
+      serial_println("WiFi connecting...");
+      i = 0;
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    log_message("Connected to WiFi");
-    log_message(WiFi.localIP().toString().c_str());
+    String msg = "WiFi connected (";
+    msg.concat(WiFi.localIP().toString());
+    msg.concat(")");
+    serial_println(msg);
     maintain_ws();
   }
   else
   {
-    log_message("Failed to connect to WiFi", true);
+    serial_println("WiFi connection failed");
   }
 }
 
@@ -87,109 +87,101 @@ void maintain_ws()
   if (ws_connecting || ws_connected)
     return;
 
-  log_message("Connecting WebSocket...");
+  serial_println("ws connecting...");
   ws.begin(F(WS_HOST), WS_PORT, F(WS_URL));
   ws.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PONG_TIMEOUT_MS, WS_DISCONNECT_TIMEOUT_COUNT);
 
   ws.setExtraHeaders("CO3006-Sensor-Name: sensor-01\r\nCO3006-Auth: key-16888888");
-  ws.onEvent(websocket_event);
+  ws.onEvent(ws_event_handler);
   ws_connecting = true;
 }
 
-void websocket_event(WStype_t type, uint8_t *payload, size_t length)
+void ws_event_handler(WStype_t type, uint8_t *payload, size_t length)
 {
+  static int disconn_counter = 0;
+
   switch (type)
   {
   case WStype_DISCONNECTED:
-    log_message("WebSocket disconnected", true);
-    ws_connecting = false;
-    ws_connected = false;
+    if (!disconn_counter)
+    {
+      serial_println("ws closed");
+      ws_connecting = false;
+      ws_connected = false;
+    }
+    // 降低重新連接的頻率
+    if (++disconn_counter > 10)
+    {
+      disconn_counter = 0;
+    }
     break;
   case WStype_CONNECTED:
-    log_message("WebSocket connected");
+    serial_println("ws opened");
     ws_connecting = false;
     ws_connected = true;
+    disconn_counter = 0;
     break;
   case WStype_TEXT:
   case WStype_BIN:
-    handle_ws_payload(payload, length);
+    ws_payload_handler(payload, length);
     break;
   default:
     break;
   }
 }
 
-void handle_ws_payload(uint8_t *payload, size_t length)
+void ws_payload_handler(uint8_t *ws_payload, size_t length)
 {
   if (length < 1)
     return;
 
-  uint8_t header = payload[0];
+  uint8_t header = ws_payload[0];
+
   switch (header)
   {
   case HEADER_SERVER_SET_CLIENT_CONFIG:
   case HEADER_SERVER_GET_CLIENT_CONFIG:
-    Serial.write(payload, length);
+    Serial.write(ws_payload, length);
     Serial.write(EOP);
     break;
   case HEADER_SERVER_DEBUG_ESP8266_RESET:
-    log_message("Resetting hardware...");
+    serial_println("resetting");
     ESP.reset();
     break;
   case HEADER_SERVER_DEBUG_ESP8266_RESTART:
-    log_message("Restarting software...");
+    serial_println("restarting");
     ESP.restart();
     break;
   case HEADER_SERVER_DEBUG_ESP8266_DISCONNECT_WS:
-    log_message("Disconnecting WebSocket...");
+    serial_println("disconnecting ws");
     ws.disconnect();
     ws_connected = false;
     ws_connecting = false;
     break;
   default:
-    log_message("Unknown header received", true);
+    serial_println("unknown header");
     break;
   }
 }
 
-void log_message(const char *message, bool is_error)
+void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size)
 {
-  String filtered_message = String(message);
-  filtered_message.replace("\n", " ");
-  Serial.write(HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO);
-  Serial.write(is_error ? "ERR " : "INFO ");
-  Serial.write(filtered_message.c_str());
+  Serial.write(header);
+  Serial.write(payload, payload_size);
   Serial.write('\n');
   Serial.write(EOP);
 }
 
-bool read_serial_payload(uint8_t *buffer, size_t length)
+void serial_println(String message)
 {
-  unsigned long start_time = millis();
-  size_t index = 0;
-
-  while (index < length && millis() - start_time < SERIAL_READ_TIMEOUT_MS)
-  {
-    if (Serial.available() > 0)
-    {
-      buffer[index++] = static_cast<uint8_t>(Serial.read());
-    }
-  }
-
-  if (index != length || Serial.read() != EOP)
-  {
-    log_message("Invalid Serial payload", true);
-    return false;
-  }
-
-  return true;
+  send_serial_packet(HEADER_ESP8266_LOG, (uint8_t *)message.c_str(), (size_t)message.length());
 }
 
 void setup()
 {
   Serial.begin(9600);
   maintain_wifi();
-  log_message("Setup complete");
+  serial_println("setup done");
 }
 
 void loop()
@@ -206,22 +198,17 @@ void loop()
 
   ws.loop();
 
-  if (Serial.available() > 0)
-  {
-    uint8_t incoming = static_cast<uint8_t>(Serial.read());
-    uint8_t buffer[CONFIG_PAYLOAD_LENGTH + 1];
+  static unsigned long last_task_ms = 0;
+  static unsigned long current_ms = 0;
 
-    if (incoming == HEADER_CLIENT_SUBMIT_CONFIG && read_serial_payload(buffer, CONFIG_PAYLOAD_LENGTH))
-    {
-      ws.sendBIN(buffer, CONFIG_PAYLOAD_LENGTH);
-    }
-    else if (incoming == HEADER_CLIENT_GET_SERVER_CONFIG && Serial.read() == EOP)
-    {
-      ws.sendBIN(&incoming, 1);
-    }
-    else
-    {
-      log_message("Unknown or invalid Serial command", true);
-    }
+  current_ms = millis();
+
+  if (current_ms - last_task_ms > TASK_INTERVAL_MS)
+  {
+    last_task_ms = current_ms;
+    serial_println("OK");
   }
+
+  // 降低功耗
+  delay(1);
 }

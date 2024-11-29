@@ -1,186 +1,208 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 
-// Define pins
+#define RESET_PIN 7
 #define RX_PIN 0
 #define TX_PIN 1
-
-#define SENSOR_ANALOG_PIN A0
 #define WATER_PUMP_PIN 3
+#define SENSOR_ANALOG_PIN A0
 
+#define HEADER_EMPTY (uint8_t)0
+#define HEADER_SUBMIT_M (uint8_t)110
 #define HEADER_CLIENT_SUBMIT_CONFIG (uint8_t)111
 #define HEADER_SERVER_SET_CLIENT_CONFIG (uint8_t)112
 #define HEADER_SERVER_GET_CLIENT_CONFIG (uint8_t)113
 #define HEADER_CLIENT_GET_SERVER_CONFIG (uint8_t)114
-#define HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO (uint8_t)120
+#define HEADER_ESP8266_LOG_MESSAGE (uint8_t)120
 #define EOP (uint8_t)0x00
 
-#define CONFIG_PAYLOAD_LENGTH 16
+// 檢查是否要澆水的頻率
+#define INNER_INTERVAL_MS 100
+#define PACKET_CONFIG_PAYLOAD_SIZE 16
 
-// Create SoftwareSerial instance for communication with ESP8266
-SoftwareSerial espSerial(RX_PIN, TX_PIN);
+typedef struct
+{
+  uint8_t header;
+  uint8_t *payload;
+  size_t payload_size;
+} SerialPacket;
 
-// Variables for soil moisture calculation
+bool is_watering = false;
+
 uint32_t V_offset = 250;
 uint32_t L = 30;
 uint32_t U = 70;
 uint32_t I = 1000;
 
-bool isWatering = false;
+SoftwareSerial ESP8266Serial(RX_PIN, TX_PIN);
 
-// Function prototypes
-void handleIncomingData();
-void sendSoilMoistureToESP8266(uint8_t moisture);
-void sendClientConfigToESP8266();
+void reset_serial_packet(SerialPacket *packet);
+bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
+uint8_t get_M();
+
+void reset_serial_packet(SerialPacket *packet)
+{
+  packet->header = HEADER_EMPTY;
+  free(packet->payload);
+  packet->payload = NULL;
+  packet->payload_size = (size_t)0;
+}
+
+bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
+{
+  packet->payload = (uint8_t *)realloc(packet->payload, packet->payload_size + 1);
+
+  if (!packet->payload)
+  {
+    // 記憶體分配失敗時重啟機器
+    Serial.println("RESET");
+    reset_serial_packet(packet);
+    digitalWrite(RESET_PIN, LOW);
+    return false;
+  }
+
+  packet->payload[packet->payload_size] = data;
+  ++packet->payload_size;
+  return true;
+}
+
+uint8_t get_M()
+{
+  // Read the analog sensor value
+  uint32_t V_raw = (uint32_t)analogRead(SENSOR_ANALOG_PIN);
+
+  // Calculate soil moisture percentage
+  uint8_t M = (uint8_t)((uint32_t)1 - max(V_raw - V_offset, (uint32_t)0) / float(1023.0 - V_offset)) * (uint32_t)100;
+
+  return M;
+}
 
 void setup()
 {
-  // Initialize Serial for debugging
   Serial.begin(115200);
-  while (!Serial)
-  {
-    ; // Wait for Serial to be ready
-  }
-  espSerial.begin(9600);
-  while (!espSerial)
-  {
-    ; // Wait for SoftwareSerial to be ready
-  }
+  ESP8266Serial.begin(9600);
+
+  // 先寫入避免出錯
+  digitalWrite(RESET_PIN, HIGH);
+
+  pinMode(RESET_PIN, OUTPUT);
   pinMode(SENSOR_ANALOG_PIN, INPUT);
   pinMode(WATER_PUMP_PIN, OUTPUT);
-  digitalWrite(WATER_PUMP_PIN, LOW); // Ensure the water pump is off at startup
+
+  digitalWrite(RESET_PIN, HIGH);
+  digitalWrite(WATER_PUMP_PIN, LOW);
 }
 
 void loop()
 {
-  // Handle incoming data from ESP8266
-  handleIncomingData();
+  static unsigned long last_task1_ms = 0;
+  static unsigned long last_task2_ms = 0;
+  static unsigned long current_ms = 0;
 
-  // Read soil moisture and send data periodically
-  static unsigned long lastSentTimeMs = 0;
-  unsigned long currentTimeMs = millis();
-  if (currentTimeMs - lastSentTimeMs >= I)
+  static SerialPacket packet;
+  static uint8_t incoming = 0;
+  static uint8_t M = UINT8_MAX;
+
+  M = UINT8_MAX;
+  current_ms = millis();
+
+  // 提交資料到 server
+  if (current_ms - last_task1_ms > I)
   {
-    // Read the analog sensor value
-    int V_raw = analogRead(SENSOR_ANALOG_PIN);
-
-    // Calculate soil moisture percentage
-    uint8_t M = (1 - max(V_raw - V_offset, 0) / float(1023 - V_offset)) * 100;
-
-    // Send soil moisture to ESP8266
-    sendSoilMoistureToESP8266(M);
-
-    // Control watering based on moisture level
-    if (M < L && !isWatering)
+    Serial.println("submit M");
+    last_task1_ms = current_ms;
+    if (M == UINT8_MAX)
     {
-      digitalWrite(WATER_PUMP_PIN, HIGH); // Start watering
-      isWatering = true;
+      M = get_M();
     }
-    else if (M >= U && isWatering)
-    {
-      digitalWrite(WATER_PUMP_PIN, LOW); // Stop watering
-      isWatering = false;
-    }
-
-    // Debug output
-    Serial.print("A0: ");
-    Serial.print(V_raw);
-    Serial.print(" (");
-    Serial.print(M);
-    Serial.println("%)");
-
-    lastSentTimeMs = currentTimeMs;
+    ESP8266Serial.write(HEADER_SUBMIT_M);
+    ESP8266Serial.write(M);
+    ESP8266Serial.write(EOP);
   }
-}
 
-// Function to handle incoming data from ESP8266
-void handleIncomingData()
-{
-  static bool isReadingLogMessage = false;
-  static bool isMessageBufferEnd = false;
-  static String logMessageBuffer = "";
-  static uint8_t configPayloadBuffer[CONFIG_PAYLOAD_LENGTH];
-  static uint8_t incomingData = 0;
-
-  while (espSerial.available() > 0)
+  // 檢查是否要澆水
+  // 檢查是否要澆水的頻率
+  if (current_ms - last_task2_ms > INNER_INTERVAL_MS)
   {
-    incomingData = espSerial.read();
-
-    if (isReadingLogMessage)
+    last_task2_ms = current_ms;
+    if (M == UINT8_MAX)
     {
-      if (isMessageBufferEnd)
-      {
-        if (incomingData == EOP)
-        {
-          Serial.print("[ESP8266]: ");
-          Serial.println(logMessageBuffer);
-        }
-        else
-        {
-          Serial.print("[ESP8266]: (incomplete) ");
-          Serial.println(logMessageBuffer);
-        }
-        isMessageBufferEnd = false;
-        isReadingLogMessage = false;
-        logMessageBuffer = "";
-      }
-      else if (incomingData == '\n')
-      {
-        isMessageBufferEnd = true;
-      }
-      else
-      {
-        logMessageBuffer += (char)incomingData;
-      }
-      continue;
+      M = get_M();
     }
 
-    if (incomingData == HEADER_ESP8266_LOG_MESSAGE_TO_ARDUINO)
+    if (M < L)
     {
-      isReadingLogMessage = true;
-      continue;
+      // 開始澆水
+      digitalWrite(WATER_PUMP_PIN, HIGH);
+      is_watering = true;
     }
 
-    if (incomingData == HEADER_SERVER_SET_CLIENT_CONFIG)
+    if (is_watering && M >= U)
     {
-      int i;
-      for (i = 0; i < CONFIG_PAYLOAD_LENGTH; i++)
-      {
-        configPayloadBuffer[i] = (uint8_t)espSerial.read();
-      }
-      if ((uint8_t)espSerial.read() == EOP)
-      {
-        V_offset = *(uint32_t *)&configPayloadBuffer[0];
-        L = *(uint32_t *)&configPayloadBuffer[4];
-        U = *(uint32_t *)&configPayloadBuffer[8];
-        I = *(uint32_t *)&configPayloadBuffer[12];
-        sendClientConfigToESP8266();
-      }
-      continue;
-    }
-
-    if (incomingData == HEADER_SERVER_GET_CLIENT_CONFIG && (uint8_t)espSerial.read() == EOP)
-    {
-      sendClientConfigToESP8266();
-      continue;
+      // 停止澆水
+      digitalWrite(WATER_PUMP_PIN, LOW);
+      is_watering = false;
     }
   }
-}
 
-// Function to send soil moisture data to ESP8266
-void sendSoilMoistureToESP8266(uint8_t moisture)
-{
-  espSerial.write(moisture);
-  espSerial.write(EOP);
-}
+  if (ESP8266Serial.available())
+  {
+    incoming = ESP8266Serial.read();
+    if (packet.header == HEADER_EMPTY)
+    {
+      packet.header = incoming;
+    }
+    else
+    {
+      switch (packet.header)
+      {
+      case HEADER_SERVER_SET_CLIENT_CONFIG:
+        if (packet.payload_size < PACKET_CONFIG_PAYLOAD_SIZE)
+        {
+          append_serial_packet_payload(&packet, incoming);
+          break;
+        }
+        if (incoming == EOP)
+        {
+          V_offset = *(uint32_t *)&packet.payload[0];
+          L = *(uint32_t *)&packet.payload[4];
+          U = *(uint32_t *)&packet.payload[8];
+          I = *(uint32_t *)&packet.payload[12];
+        }
+        reset_serial_packet(&packet);
+        break;
 
-// Function to send current configuration to ESP8266
-void sendClientConfigToESP8266()
-{
-  espSerial.write(HEADER_CLIENT_SUBMIT_CONFIG);
-  espSerial.write((uint8_t *)&V_offset, 4);
-  espSerial.write((uint8_t *)&L, 4);
-  espSerial.write((uint8_t *)&U, 4);
-  espSerial.write((uint8_t *)&I, 4);
-  espSerial.write(EOP);
+      case HEADER_SERVER_GET_CLIENT_CONFIG:
+        if (incoming == EOP)
+        {
+          ESP8266Serial.write(HEADER_CLIENT_SUBMIT_CONFIG);
+          ESP8266Serial.write((uint8_t *)&V_offset, (size_t)4);
+          ESP8266Serial.write((uint8_t *)&L, (size_t)4);
+          ESP8266Serial.write((uint8_t *)&U, (size_t)4);
+          ESP8266Serial.write((uint8_t *)&I, (size_t)4);
+          ESP8266Serial.write(EOP);
+        }
+        reset_serial_packet(&packet);
+        break;
+
+      case HEADER_ESP8266_LOG_MESSAGE:
+        if (incoming == EOP)
+        {
+          Serial.write("[ESP8266]: ");
+          Serial.write(packet.payload, packet.payload_size);
+          reset_serial_packet(&packet);
+          break;
+        }
+        append_serial_packet_payload(&packet, incoming);
+        break;
+
+      default:
+        reset_serial_packet(&packet);
+        break;
+      }
+    }
+  }
+
+  // 降低功耗
+  delay(1);
 }
