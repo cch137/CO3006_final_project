@@ -3,8 +3,8 @@
 
 #define RESET_PIN 7
 #define RX_PIN 0
-#define TX_PIN 1
-#define WATER_PUMP_PIN 3
+#define TX_PIN A5
+#define WATER_PUMP_PIN 5
 #define SENSOR_ANALOG_PIN A0
 
 #define HEADER_EMPTY (uint8_t)0
@@ -29,7 +29,7 @@ typedef struct
 
 bool is_watering = false;
 
-uint32_t V_offset = 250;
+uint32_t V_offset = 350;
 uint32_t L = 30;
 uint32_t U = 70;
 uint32_t I = 1000;
@@ -39,6 +39,7 @@ SoftwareSerial ESP8266Serial(RX_PIN, TX_PIN);
 void reset_serial_packet(SerialPacket *packet);
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
 uint8_t get_M();
+void wakeup_serial();
 
 void reset_serial_packet(SerialPacket *packet)
 {
@@ -68,13 +69,23 @@ bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
 
 uint8_t get_M()
 {
-  // Read the analog sensor value
   uint32_t V_raw = (uint32_t)analogRead(SENSOR_ANALOG_PIN);
 
-  // Calculate soil moisture percentage
-  uint8_t M = (uint8_t)((uint32_t)1 - max(V_raw - V_offset, (uint32_t)0) / float(1023.0 - V_offset)) * (uint32_t)100;
+  uint8_t M = (1 - max(V_raw - V_offset, 0) / float(1023 - V_offset)) * 100;
 
   return M;
+}
+
+void wakeup_serial()
+{
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
+  ESP8266Serial.write(EOP);
 }
 
 void setup()
@@ -114,10 +125,10 @@ void loop()
     {
       M = get_M();
     }
-    Serial.println("Arduino M");
+    wakeup_serial();
     ESP8266Serial.write(HEADER_SUBMIT_M);
-    // ESP8266Serial.write(M);
-    // ESP8266Serial.write(EOP);
+    ESP8266Serial.write(M);
+    ESP8266Serial.write(EOP);
   }
 
   // 檢查是否要澆水
@@ -176,6 +187,7 @@ void loop()
       case HEADER_SERVER_GET_CLIENT_CONFIG:
         if (incoming == EOP)
         {
+          wakeup_serial();
           ESP8266Serial.write(HEADER_CLIENT_SUBMIT_CONFIG);
           ESP8266Serial.write((uint8_t *)&V_offset, (size_t)4);
           ESP8266Serial.write((uint8_t *)&L, (size_t)4);
@@ -203,7 +215,4 @@ void loop()
       }
     }
   }
-
-  // 降低功耗
-  delay(1);
 }

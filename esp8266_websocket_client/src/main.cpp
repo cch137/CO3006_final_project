@@ -243,6 +243,11 @@ void loop()
       switch (packet.header)
       {
       case HEADER_SUBMIT_M:
+        if (packet.payload_size == 0)
+        {
+          append_serial_packet_payload(&packet, incoming);
+          break;
+        }
         if (incoming == EOP)
         {
           if (packet.payload_size == 1)
@@ -252,19 +257,8 @@ void loop()
             packet.payload[0] = packet.header;
             ws.sendBIN(packet.payload, packet.payload_size);
           }
-          reset_serial_packet(&packet);
         }
-        else
-        {
-          if (packet.payload_size == 0)
-          {
-            append_serial_packet_payload(&packet, incoming);
-          }
-          else
-          {
-            reset_serial_packet(&packet);
-          }
-        }
+        reset_serial_packet(&packet);
         break;
 
       case HEADER_CLIENT_SUBMIT_CONFIG:
@@ -298,7 +292,4 @@ void loop()
       }
     }
   }
-
-  // 降低功耗
-  delay(1);
 }
