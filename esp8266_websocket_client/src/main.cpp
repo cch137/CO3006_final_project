@@ -2,7 +2,6 @@
 #include <WebSocketsClient.h>
 #include "ESP8266WiFi.h"
 
-#define MACHINE_NAME "M01"
 #define API_KEY "key-16888888"
 
 #define WIFI_SSID "9G"
@@ -11,7 +10,7 @@
 
 #define WS_HOST "140.115.200.43"
 #define WS_PORT 80
-#define WS_URL "/jet-d/ncu/CO3006/conn"
+#define WS_URL "/jet/ncu/CO3006/conn"
 #define WS_PING_INTERVAL_MS 10000
 #define WS_PONG_TIMEOUT_MS 2000
 #define WS_DISCONNECT_TIMEOUT_COUNT 5
@@ -97,7 +96,7 @@ void maintain_ws()
 
   String headers = "";
   headers.concat("CO3006-Name: ");
-  headers.concat(MACHINE_NAME);
+  headers.concat(WiFi.macAddress());
   headers.concat("\r\nCO3006-Auth: ");
   headers.concat(API_KEY);
 
