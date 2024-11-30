@@ -296,7 +296,7 @@ void loop()
         if (incoming == EOP)
         {
           // 轉發封包到 server
-          append_serial_packet_payload(&packet, packet.payload[0]);
+          append_serial_packet_payload(&packet, packet.header);
           ws.sendBIN(packet.payload, packet.payload_size);
         }
         reset_serial_packet(&packet);

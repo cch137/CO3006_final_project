@@ -2,10 +2,11 @@
 #include <SoftwareSerial.h>
 
 #define RESET_PIN 7
-#define RX_PIN A5
-#define TX_PIN A4
 #define WATER_PUMP_PIN 5
-#define SENSOR_ANALOG_PIN A0
+#define M01_SENSOR_PIN A0
+#define M01_TX_PIN A1
+#define M01_RX_PIN A2
+#define ESP8266_EN_PIN 13
 
 #define HEADER_EMPTY (uint8_t)0
 #define HEADER_SUBMIT_M (uint8_t)110
@@ -16,9 +17,12 @@
 #define HEADER_ESP8266_LOG_MESSAGE (uint8_t)120
 #define EOP (uint8_t)0x00
 
-// 檢查是否要澆水的頻率
+// 檢查是否要澆水的頻率（正在澆水中）
 #define DETECT_INTERVAL_BUSY_MS 100
+// 檢查是否要澆水的頻率（待機中）
 #define DETECT_INTERVAL_IDLE_MS 10000
+// 未初始化時提示訊息的頻率
+#define WAITING_LOG_INTERVAL_MS 3000
 #define PACKET_CONFIG_PAYLOAD_SIZE 16
 
 typedef struct
@@ -28,6 +32,7 @@ typedef struct
   size_t payload_size;
 } SerialPacket;
 
+bool config_inited = false;
 bool is_watering = false;
 
 uint32_t V_offset = 350;
@@ -35,7 +40,7 @@ uint32_t L = 30;
 uint32_t U = 70;
 uint32_t I = 10000;
 
-SoftwareSerial ESP8266Serial(RX_PIN, TX_PIN);
+SoftwareSerial ESP8266Serial(M01_RX_PIN, M01_TX_PIN);
 
 void reset_serial_packet(SerialPacket *packet);
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
@@ -71,7 +76,7 @@ bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
 
 uint8_t get_M()
 {
-  int V_raw = analogRead(SENSOR_ANALOG_PIN);
+  int V_raw = analogRead(M01_SENSOR_PIN);
 
   uint8_t M = (1 - max(V_raw - (int)V_offset, 0) / float(1023 - V_offset)) * 100;
 
@@ -87,11 +92,15 @@ void setup()
   digitalWrite(RESET_PIN, HIGH);
 
   pinMode(RESET_PIN, OUTPUT);
-  pinMode(SENSOR_ANALOG_PIN, INPUT);
+  pinMode(M01_SENSOR_PIN, INPUT);
   pinMode(WATER_PUMP_PIN, OUTPUT);
+  pinMode(ESP8266_EN_PIN, OUTPUT);
 
   digitalWrite(RESET_PIN, HIGH);
   digitalWrite(WATER_PUMP_PIN, LOW);
+  digitalWrite(ESP8266_EN_PIN, LOW);
+  delay(100);
+  digitalWrite(ESP8266_EN_PIN, HIGH);
 }
 
 void loop()
@@ -107,41 +116,55 @@ void loop()
   M = UINT8_MAX;
   current_ms = millis();
 
-  // 提交資料到 server
-  if (current_ms - last_task1_ms > I)
+  // config 初始化之後才開始做定時任務和澆水
+  if (config_inited)
   {
-    last_task1_ms = current_ms;
-    if (M == UINT8_MAX)
+    // 提交資料到 server
+    if (current_ms - last_task1_ms > I)
     {
-      M = get_M();
+      last_task1_ms = current_ms;
+      if (M == UINT8_MAX)
+      {
+        M = get_M();
+      }
+      ESP8266Serial.write(HEADER_SUBMIT_M);
+      ESP8266Serial.write(M);
+      ESP8266Serial.write(EOP);
     }
-    ESP8266Serial.write(HEADER_SUBMIT_M);
-    ESP8266Serial.write(M);
-    ESP8266Serial.write(EOP);
+
+    // 檢查是否要澆水
+    // 檢查是否要澆水的頻率
+    if (current_ms - last_task2_ms > (is_watering ? DETECT_INTERVAL_BUSY_MS : DETECT_INTERVAL_IDLE_MS))
+    {
+      last_task2_ms = current_ms;
+      if (M == UINT8_MAX)
+      {
+        M = get_M();
+      }
+
+      if (M < L)
+      {
+        // 開始澆水
+        digitalWrite(WATER_PUMP_PIN, HIGH);
+        is_watering = true;
+      }
+
+      if (is_watering && M >= U)
+      {
+        // 停止澆水
+        digitalWrite(WATER_PUMP_PIN, LOW);
+        is_watering = false;
+      }
+    }
   }
-
-  // 檢查是否要澆水
-  // 檢查是否要澆水的頻率
-  if (current_ms - last_task2_ms > (is_watering ? DETECT_INTERVAL_BUSY_MS : DETECT_INTERVAL_IDLE_MS))
+  else
   {
-    last_task2_ms = current_ms;
-    if (M == UINT8_MAX)
+    if (current_ms - last_task2_ms > WAITING_LOG_INTERVAL_MS)
     {
-      M = get_M();
-    }
-
-    if (M < L)
-    {
-      // 開始澆水
-      digitalWrite(WATER_PUMP_PIN, HIGH);
-      is_watering = true;
-    }
-
-    if (is_watering && M >= U)
-    {
-      // 停止澆水
-      digitalWrite(WATER_PUMP_PIN, LOW);
-      is_watering = false;
+      last_task2_ms = current_ms;
+      Serial.println("waiting for server initialization...");
+      ESP8266Serial.write(HEADER_CLIENT_GET_SERVER_CONFIG);
+      ESP8266Serial.write(EOP);
     }
   }
 
@@ -169,6 +192,11 @@ void loop()
           L = *(uint32_t *)&packet.payload[4];
           U = *(uint32_t *)&packet.payload[8];
           I = *(uint32_t *)&packet.payload[12];
+          if (!config_inited)
+          {
+            config_inited = true;
+            Serial.println("machine initialized");
+          }
         }
         reset_serial_packet(&packet);
         break;
