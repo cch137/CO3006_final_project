@@ -2,6 +2,9 @@
 #include <WebSocketsClient.h>
 #include "ESP8266WiFi.h"
 
+#define MACHINE_NAME "M01"
+#define API_KEY "key-16888888"
+
 #define WIFI_SSID "9G"
 #define WIFI_PASSWORD "chee8888"
 #define WIFI_MAX_RETRY_TIME_MS 10000
@@ -92,7 +95,13 @@ void maintain_ws()
   ws.begin(F(WS_HOST), WS_PORT, F(WS_URL));
   ws.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PONG_TIMEOUT_MS, WS_DISCONNECT_TIMEOUT_COUNT);
 
-  ws.setExtraHeaders("CO3006-Sensor-Name: sensor-01\r\nCO3006-Auth: key-16888888");
+  String headers = "";
+  headers.concat("CO3006-Name: ");
+  headers.concat(MACHINE_NAME);
+  headers.concat("\r\nCO3006-Auth: ");
+  headers.concat(API_KEY);
+
+  ws.setExtraHeaders(headers.c_str());
   ws.onEvent(ws_event_handler);
   ws_connecting = true;
 }

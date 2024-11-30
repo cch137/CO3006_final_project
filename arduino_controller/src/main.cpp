@@ -2,8 +2,8 @@
 #include <SoftwareSerial.h>
 
 #define RESET_PIN 7
-#define RX_PIN 0
-#define TX_PIN A5
+#define RX_PIN A5
+#define TX_PIN A4
 #define WATER_PUMP_PIN 5
 #define SENSOR_ANALOG_PIN A0
 
