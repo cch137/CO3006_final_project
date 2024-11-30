@@ -17,7 +17,8 @@
 #define EOP (uint8_t)0x00
 
 // 檢查是否要澆水的頻率
-#define INNER_INTERVAL_MS 100
+#define DETECT_INTERVAL_BUSY_MS 100
+#define DETECT_INTERVAL_IDLE_MS 10000
 #define PACKET_CONFIG_PAYLOAD_SIZE 16
 
 typedef struct
@@ -32,14 +33,13 @@ bool is_watering = false;
 uint32_t V_offset = 350;
 uint32_t L = 30;
 uint32_t U = 70;
-uint32_t I = 1000;
+uint32_t I = 10000;
 
 SoftwareSerial ESP8266Serial(RX_PIN, TX_PIN);
 
 void reset_serial_packet(SerialPacket *packet);
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
 uint8_t get_M();
-void wakeup_serial();
 
 void reset_serial_packet(SerialPacket *packet)
 {
@@ -51,41 +51,31 @@ void reset_serial_packet(SerialPacket *packet)
 
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
 {
-  packet->payload = (uint8_t *)realloc(packet->payload, packet->payload_size + 1);
+  uint8_t *new_payload = (uint8_t *)realloc(packet->payload, ++packet->payload_size);
 
-  if (!packet->payload)
+  if (!new_payload)
   {
     // 記憶體分配失敗時重啟機器
     Serial.println("RESET");
     reset_serial_packet(packet);
     digitalWrite(RESET_PIN, LOW);
+
     return false;
   }
 
-  packet->payload[packet->payload_size] = data;
-  ++packet->payload_size;
+  packet->payload = new_payload;
+  packet->payload[packet->payload_size - 1] = data;
+
   return true;
 }
 
 uint8_t get_M()
 {
-  uint32_t V_raw = (uint32_t)analogRead(SENSOR_ANALOG_PIN);
+  int V_raw = analogRead(SENSOR_ANALOG_PIN);
 
-  uint8_t M = (1 - max(V_raw - V_offset, 0) / float(1023 - V_offset)) * 100;
+  uint8_t M = (1 - max(V_raw - (int)V_offset, 0) / float(1023 - V_offset)) * 100;
 
   return M;
-}
-
-void wakeup_serial()
-{
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
-  ESP8266Serial.write(EOP);
 }
 
 void setup()
@@ -125,7 +115,6 @@ void loop()
     {
       M = get_M();
     }
-    wakeup_serial();
     ESP8266Serial.write(HEADER_SUBMIT_M);
     ESP8266Serial.write(M);
     ESP8266Serial.write(EOP);
@@ -133,7 +122,7 @@ void loop()
 
   // 檢查是否要澆水
   // 檢查是否要澆水的頻率
-  if (current_ms - last_task2_ms > INNER_INTERVAL_MS)
+  if (current_ms - last_task2_ms > (is_watering ? DETECT_INTERVAL_BUSY_MS : DETECT_INTERVAL_IDLE_MS))
   {
     last_task2_ms = current_ms;
     if (M == UINT8_MAX)
@@ -187,7 +176,6 @@ void loop()
       case HEADER_SERVER_GET_CLIENT_CONFIG:
         if (incoming == EOP)
         {
-          wakeup_serial();
           ESP8266Serial.write(HEADER_CLIENT_SUBMIT_CONFIG);
           ESP8266Serial.write((uint8_t *)&V_offset, (size_t)4);
           ESP8266Serial.write((uint8_t *)&L, (size_t)4);
@@ -215,4 +203,7 @@ void loop()
       }
     }
   }
+
+  // 降低功耗
+  delay(1);
 }

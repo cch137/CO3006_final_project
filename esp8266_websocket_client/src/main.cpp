@@ -191,18 +191,20 @@ void reset_serial_packet(SerialPacket *packet)
 
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
 {
-  packet->payload = (uint8_t *)realloc(packet->payload, packet->payload_size + 1);
+  uint8_t *new_payload = (uint8_t *)realloc(packet->payload, ++packet->payload_size);
 
-  if (!packet->payload)
+  if (!new_payload)
   {
     // 記憶體分配失敗時重啟機器
     reset_serial_packet(packet);
     ESP.reset();
+
     return false;
   }
 
-  packet->payload[packet->payload_size] = data;
-  ++packet->payload_size;
+  packet->payload = new_payload;
+  packet->payload[packet->payload_size - 1] = data;
+
   return true;
 }
 
@@ -269,9 +271,14 @@ void loop()
         }
         if (incoming == EOP)
         {
-          Serial.write(HEADER_SERVER_SET_CLIENT_CONFIG);
-          Serial.write(packet.payload, packet.payload_size);
-          Serial.write(EOP);
+          append_serial_packet_payload(&packet, EOP);
+          for (int i = packet.payload_size - 1; i > 0; --i)
+          {
+            // 不要把 --i 搬到右式，因為右式會先被計算。
+            packet.payload[i] = packet.payload[i - 1];
+          }
+          packet.payload[0] = packet.header;
+          ws.sendBIN(packet.payload, packet.payload_size);
         }
         reset_serial_packet(&packet);
         break;
@@ -292,4 +299,7 @@ void loop()
       }
     }
   }
+
+  // 降低功耗
+  delay(1);
 }
