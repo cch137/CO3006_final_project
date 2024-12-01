@@ -4,8 +4,6 @@
 
 #define API_KEY "key-16888888"
 
-#define WIFI_SSID "9G"
-#define WIFI_PASSWORD "chee8888"
 #define WIFI_MAX_RETRY_TIME_MS 10000
 
 #define WS_HOST "140.115.200.43"
@@ -36,11 +34,22 @@ typedef struct
   size_t payload_size;
 } SerialPacket;
 
+typedef struct
+{
+  const char *ssid;
+  const char *password;
+} WiFiCredentials;
+
+WiFiCredentials wifi_list[] = {
+    {"9G", "chee8888"},
+    {"CH4", "chee8888"}};
+
 bool ws_connecting = false;
 bool ws_connected = false;
 WebSocketsClient ws;
 
 void maintain_wifi();
+void connect_to_best_wifi();
 void maintain_ws();
 void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
 void ws_payload_handler(uint8_t *ws_payload, size_t length);
@@ -50,38 +59,74 @@ void serial_println(String message);
 void reset_serial_packet(SerialPacket *packet);
 bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
 
-void maintain_wifi()
+void connect_to_best_wifi()
 {
-  if (WiFi.status() == WL_CONNECTED)
-    return;
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  unsigned int i = 10;
-  unsigned long start_attempt_time = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start_attempt_time < WIFI_MAX_RETRY_TIME_MS)
+  int wifi_count = WiFi.scanNetworks();
+  if (wifi_count == 0)
   {
+    serial_println("no Wi-Fi found");
     delay(100);
+    return;
+  }
 
-    if (++i > 20)
+  int best_signal_strength = -100;
+  const char *best_ssid = nullptr;
+  const char *best_password = nullptr;
+
+  for (int i = 0; i < wifi_count; i++)
+  {
+    String ssid = WiFi.SSID(i);
+    int signal_strength = WiFi.RSSI(i);
+
+    for (auto &credentials : wifi_list)
     {
-      serial_println("WiFi connecting...");
-      i = 0;
+      if (ssid == credentials.ssid && signal_strength > best_signal_strength)
+      {
+        best_signal_strength = signal_strength;
+        best_ssid = credentials.ssid;
+        best_password = credentials.password;
+      }
     }
   }
 
-  if (WiFi.status() == WL_CONNECTED)
+  if (best_ssid)
   {
-    String msg = "WiFi connected (";
-    msg.concat(WiFi.localIP().toString());
-    msg.concat(")");
-    serial_println(msg);
-    maintain_ws();
+    WiFi.begin(best_ssid, best_password);
+    unsigned long start_attempt_time = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start_attempt_time < WIFI_MAX_RETRY_TIME_MS)
+    {
+      delay(100);
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      String msg = "Wi-Fi connected, SSID: ";
+      msg.concat(best_ssid);
+      serial_println(msg);
+      msg = "IP address: ";
+      msg.concat(WiFi.localIP().toString());
+      serial_println(msg);
+    }
+    else
+    {
+      serial_println("Wi-Fi connection failed");
+    }
   }
   else
   {
-    serial_println("WiFi connection failed");
+    serial_println("no valid Wi-Fi");
+  }
+}
+
+void maintain_wifi()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    connect_to_best_wifi();
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      maintain_ws();
+    }
   }
 }
 
