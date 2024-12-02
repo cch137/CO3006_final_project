@@ -126,6 +126,8 @@ void loop()
       if (M == UINT8_MAX)
       {
         M = get_M();
+        Serial.print("M=");
+        Serial.println(M);
       }
       ESP8266Serial.write(HEADER_SUBMIT_M);
       ESP8266Serial.write(M);
@@ -147,6 +149,7 @@ void loop()
         // 開始澆水
         digitalWrite(WATER_PUMP_PIN, HIGH);
         is_watering = true;
+        Serial.println("start watering");
       }
 
       if (is_watering && M >= U)
@@ -154,6 +157,7 @@ void loop()
         // 停止澆水
         digitalWrite(WATER_PUMP_PIN, LOW);
         is_watering = false;
+        Serial.println("stop watering");
       }
     }
   }
@@ -195,7 +199,15 @@ void loop()
           if (!config_inited)
           {
             config_inited = true;
-            Serial.println("machine initialized");
+            Serial.print("machine initialized: ");
+            Serial.print("V_offset=");
+            Serial.print(V_offset);
+            Serial.print(", L=");
+            Serial.print(L);
+            Serial.print(", U=");
+            Serial.print(U);
+            Serial.print(", I=");
+            Serial.println(I);
           }
         }
         reset_serial_packet(&packet);
