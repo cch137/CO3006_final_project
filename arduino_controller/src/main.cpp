@@ -4,8 +4,8 @@
 #define RESET_PIN 7
 #define WATER_PUMP_PIN 5
 #define M01_SENSOR_PIN A0
-#define M01_TX_PIN A1
-#define M01_RX_PIN A2
+#define M01_TX_PIN A4
+#define M01_RX_PIN A5
 #define ESP8266_EN_PIN 13
 
 #define HEADER_EMPTY (uint8_t)0

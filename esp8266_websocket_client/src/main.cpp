@@ -42,7 +42,9 @@ typedef struct
 
 WiFiCredentials wifi_list[] = {
     {"9G", "chee8888"},
-    {"CH4", "chee8888"}};
+    {"CH4", "chee8888"},
+    {"Galaxy A21s5CF7", "94878787"},
+};
 
 bool ws_connecting = false;
 bool ws_connected = false;
