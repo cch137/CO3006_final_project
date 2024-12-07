@@ -3,9 +3,9 @@
 
 #define RESET_PIN 7
 #define WATER_PUMP_PIN 5
-#define M01_SENSOR_PIN A0
-#define M01_TX_PIN A4
-#define M01_RX_PIN A5
+#define M01_SENSOR_PIN A5
+#define M01_TX_PIN A3
+#define M01_RX_PIN A4
 #define ESP8266_EN_PIN 13
 
 #define HEADER_EMPTY (uint8_t)0
@@ -30,7 +30,7 @@ typedef struct
   uint8_t header;
   uint8_t *payload;
   size_t payload_size;
-} SerialPacket;
+} Packet;
 
 bool config_inited = false;
 bool is_watering = false;
@@ -42,11 +42,11 @@ uint32_t I = 10000;
 
 SoftwareSerial ESP8266Serial(M01_RX_PIN, M01_TX_PIN);
 
-void reset_serial_packet(SerialPacket *packet);
-bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
+void reset_packet(Packet *packet);
+bool push_packet_payload(Packet *packet, uint8_t data);
 uint8_t get_M();
 
-void reset_serial_packet(SerialPacket *packet)
+void reset_packet(Packet *packet)
 {
   packet->header = HEADER_EMPTY;
   free(packet->payload);
@@ -54,7 +54,7 @@ void reset_serial_packet(SerialPacket *packet)
   packet->payload_size = (size_t)0;
 }
 
-bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
+bool push_packet_payload(Packet *packet, uint8_t data)
 {
   uint8_t *new_payload = (uint8_t *)realloc(packet->payload, ++packet->payload_size);
 
@@ -62,7 +62,7 @@ bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
   {
     // 記憶體分配失敗時重啟機器
     Serial.println("RESET");
-    reset_serial_packet(packet);
+    reset_packet(packet);
     digitalWrite(RESET_PIN, LOW);
 
     return false;
@@ -109,7 +109,7 @@ void loop()
   static unsigned long last_task2_ms = 0;
   static unsigned long current_ms = 0;
 
-  static SerialPacket packet;
+  static Packet packet;
   static uint8_t incoming = 0;
   static uint8_t M = UINT8_MAX;
 
@@ -144,7 +144,7 @@ void loop()
         M = get_M();
       }
 
-      if (M < L)
+      if (!is_watering && M < L)
       {
         // 開始澆水
         digitalWrite(WATER_PUMP_PIN, HIGH);
@@ -187,7 +187,7 @@ void loop()
       case HEADER_SERVER_SET_CLIENT_CONFIG:
         if (packet.payload_size < PACKET_CONFIG_PAYLOAD_SIZE)
         {
-          append_serial_packet_payload(&packet, incoming);
+          push_packet_payload(&packet, incoming);
           break;
         }
         if (incoming == EOP)
@@ -210,7 +210,7 @@ void loop()
             Serial.println(I);
           }
         }
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
 
       case HEADER_SERVER_GET_CLIENT_CONFIG:
@@ -223,7 +223,7 @@ void loop()
           ESP8266Serial.write((uint8_t *)&I, (size_t)4);
           ESP8266Serial.write(EOP);
         }
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
 
       case HEADER_ESP8266_LOG_MESSAGE:
@@ -231,14 +231,14 @@ void loop()
         {
           Serial.write("[ESP8266]: ");
           Serial.write(packet.payload, packet.payload_size);
-          reset_serial_packet(&packet);
+          reset_packet(&packet);
           break;
         }
-        append_serial_packet_payload(&packet, incoming);
+        push_packet_payload(&packet, incoming);
         break;
 
       default:
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
       }
     }

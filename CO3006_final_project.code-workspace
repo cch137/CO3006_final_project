@@ -1,8 +1,8 @@
 {
   "folders": [
     {
-      "name": "esp8266_websocket_client",
-      "path": "esp8266_websocket_client"
+      "name": "esp8266_tcp_client",
+      "path": "esp8266_tcp_client"
     },
     {
       "name": "arduino_controller",

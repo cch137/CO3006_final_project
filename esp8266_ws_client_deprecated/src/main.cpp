@@ -1,13 +1,13 @@
 #include <Arduino.h>
 #include <WebSocketsClient.h>
-#include "ESP8266WiFi.h"
+#include <ESP8266WiFi.h>
 
 #define API_KEY "key-16888888"
 
 #define WIFI_MAX_RETRY_TIME_MS 10000
 
-#define WS_HOST "140.115.200.43"
-#define WS_PORT 80
+#define WS_HOST "pi.cch137.link"
+#define WS_PORT 443
 #define WS_URL "/jet/ncu/CO3006/conn"
 #define WS_PING_INTERVAL_MS 10000
 #define WS_PONG_TIMEOUT_MS 2000
@@ -32,7 +32,7 @@ typedef struct
   uint8_t header;
   uint8_t *payload;
   size_t payload_size;
-} SerialPacket;
+} Packet;
 
 typedef struct
 {
@@ -50,16 +50,19 @@ bool ws_connecting = false;
 bool ws_connected = false;
 WebSocketsClient ws;
 
+// SHA-1 fingerprint of the server certificate
+const char fingerprint[] PROGMEM = "14:8B:4B:5E:BE:0E:B7:1F:6E:B6:3A:23:D9:F1:82:1C:84:98:3F:BB";
+
 void maintain_wifi();
 void connect_to_best_wifi();
 void maintain_ws();
 void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
 void ws_payload_handler(uint8_t *ws_payload, size_t length);
 
-void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size);
+void serial_send(uint8_t header, uint8_t *payload, size_t payload_size);
 void serial_println(String message);
-void reset_serial_packet(SerialPacket *packet);
-bool append_serial_packet_payload(SerialPacket *packet, uint8_t data);
+void reset_packet(Packet *packet);
+bool push_packet_payload(Packet *packet, uint8_t data);
 
 void connect_to_best_wifi()
 {
@@ -138,7 +141,9 @@ void maintain_ws()
     return;
 
   serial_println("ws connecting...");
-  ws.begin(F(WS_HOST), WS_PORT, F(WS_URL));
+
+  // Begin WebSocket connection with fingerprint verification
+  ws.beginSSL(WS_HOST, WS_PORT, WS_URL, (uint8_t *)fingerprint);
   ws.enableHeartbeat(WS_PING_INTERVAL_MS, WS_PONG_TIMEOUT_MS, WS_DISCONNECT_TIMEOUT_COUNT);
 
   String headers = "";
@@ -223,7 +228,7 @@ void ws_payload_handler(uint8_t *ws_payload, size_t length)
   }
 }
 
-void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size)
+void serial_send(uint8_t header, uint8_t *payload, size_t payload_size)
 {
   Serial.write(header);
   Serial.write(payload, payload_size);
@@ -233,10 +238,10 @@ void send_serial_packet(uint8_t header, uint8_t *payload, size_t payload_size)
 
 void serial_println(String message)
 {
-  send_serial_packet(HEADER_ESP8266_LOG, (uint8_t *)message.c_str(), (size_t)message.length());
+  serial_send(HEADER_ESP8266_LOG, (uint8_t *)message.c_str(), (size_t)message.length());
 }
 
-void reset_serial_packet(SerialPacket *packet)
+void reset_packet(Packet *packet)
 {
   packet->header = HEADER_EMPTY;
   free(packet->payload);
@@ -244,14 +249,14 @@ void reset_serial_packet(SerialPacket *packet)
   packet->payload_size = (size_t)0;
 }
 
-bool append_serial_packet_payload(SerialPacket *packet, uint8_t data)
+bool push_packet_payload(Packet *packet, uint8_t data)
 {
   uint8_t *new_payload = (uint8_t *)realloc(packet->payload, ++packet->payload_size);
 
   if (!new_payload)
   {
     // 記憶體分配失敗時重啟機器
-    reset_serial_packet(packet);
+    reset_packet(packet);
     ESP.reset();
 
     return false;
@@ -272,7 +277,7 @@ void setup()
 
 void loop()
 {
-  static SerialPacket packet;
+  static Packet packet;
   static uint8_t incoming = 0;
 
   if (WiFi.status() != WL_CONNECTED)
@@ -302,7 +307,7 @@ void loop()
       case HEADER_SUBMIT_M:
         if (packet.payload_size == 0)
         {
-          append_serial_packet_payload(&packet, incoming);
+          push_packet_payload(&packet, incoming);
           break;
         }
         if (incoming == EOP)
@@ -310,23 +315,23 @@ void loop()
           if (packet.payload_size == 1)
           {
             // 發送 M 到 server
-            append_serial_packet_payload(&packet, packet.payload[0]);
+            push_packet_payload(&packet, packet.payload[0]);
             packet.payload[0] = packet.header;
             ws.sendBIN(packet.payload, packet.payload_size);
           }
         }
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
 
       case HEADER_CLIENT_SUBMIT_CONFIG:
         if (packet.payload_size < PACKET_CONFIG_PAYLOAD_SIZE)
         {
-          append_serial_packet_payload(&packet, incoming);
+          push_packet_payload(&packet, incoming);
           break;
         }
         if (incoming == EOP)
         {
-          append_serial_packet_payload(&packet, EOP);
+          push_packet_payload(&packet, EOP);
           for (int i = packet.payload_size - 1; i > 0; --i)
           {
             // 不要把 --i 搬到右式，因為右式會先被計算。
@@ -335,21 +340,21 @@ void loop()
           packet.payload[0] = packet.header;
           ws.sendBIN(packet.payload, packet.payload_size);
         }
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
 
       case HEADER_CLIENT_GET_SERVER_CONFIG:
         if (incoming == EOP)
         {
           // 轉發封包到 server
-          append_serial_packet_payload(&packet, packet.header);
+          push_packet_payload(&packet, packet.header);
           ws.sendBIN(packet.payload, packet.payload_size);
         }
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
 
       default:
-        reset_serial_packet(&packet);
+        reset_packet(&packet);
         break;
       }
     }
